@@ -63,3 +63,6 @@ full_data/
 !*.py
 !*.ps1
 !requirements*.txt
+
+# Internal notes not intended for the public repository.
+打包与权限建议.md
