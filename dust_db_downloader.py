@@ -1,5 +1,6 @@
 import csv
 import datetime as dt
+import math
 import shutil
 import sys
 import threading
@@ -103,6 +104,12 @@ class DustDatabaseDownloader(tk.Tk):
         self.status_var = tk.StringVar(value="请选择汇总表路径，然后加载数据库索引。")
         self.count_var = tk.StringVar(value="未加载")
         self.value_search_var = tk.StringVar(value="")
+        self.spectrum_sample_var = tk.StringVar(value="")
+        self.spectrum_min_band_var = tk.StringVar(value="")
+        self.spectrum_max_band_var = tk.StringVar(value="")
+        self.spectrum_smooth_var = tk.IntVar(value=1)
+        self.spectrum_normalize_var = tk.BooleanVar(value=False)
+        self.spectrum_stats_var = tk.StringVar(value="未绘制光谱")
 
         self.rows = []
         self.headers = []
@@ -112,12 +119,17 @@ class DustDatabaseDownloader(tk.Tk):
         self.current_field = ""
         self.current_visible_values = []
         self.parameter_box = None
+        self.spectrum_selector = None
+        self.spectrum_canvas = None
+        self.spectrum_meta_tree = None
+        self.current_spectrum = None
         self.load_lock = threading.Lock()
 
         self._build_ui()
 
     def _build_ui(self):
         self._configure_style()
+        self._build_menu()
 
         outer = ttk.Frame(self, padding=12)
         outer.pack(fill="both", expand=True)
@@ -154,18 +166,21 @@ class DustDatabaseDownloader(tk.Tk):
         ttk.Checkbutton(option_frame, text="另存 CSV", variable=self.save_csv_var).pack(side="left", padx=8)
         ttk.Checkbutton(option_frame, text="另存 XLSX", variable=self.save_xlsx_var).pack(side="left", padx=8)
 
-        notebook = ttk.Notebook(outer)
-        notebook.pack(fill="both", expand=True, pady=(10, 0))
+        self.notebook = ttk.Notebook(outer)
+        self.notebook.pack(fill="both", expand=True, pady=(10, 0))
 
-        filter_page = ttk.Frame(notebook, padding=8)
-        parameter_page = ttk.Frame(notebook, padding=8)
-        log_page = ttk.Frame(notebook, padding=8)
-        notebook.add(filter_page, text="筛选条件")
-        notebook.add(parameter_page, text="另存字段")
-        notebook.add(log_page, text="日志")
+        filter_page = ttk.Frame(self.notebook, padding=8)
+        parameter_page = ttk.Frame(self.notebook, padding=8)
+        spectrum_page = ttk.Frame(self.notebook, padding=8)
+        log_page = ttk.Frame(self.notebook, padding=8)
+        self.notebook.add(filter_page, text="筛选下载")
+        self.notebook.add(parameter_page, text="另存字段")
+        self.notebook.add(spectrum_page, text="光谱可视化")
+        self.notebook.add(log_page, text="日志")
 
         self._build_filter_page(filter_page)
         self._build_parameter_page(parameter_page)
+        self._build_spectrum_page(spectrum_page)
         self._build_log_page(log_page)
 
         status_bar = ttk.Label(outer, textvariable=self.status_var, anchor="w")
@@ -179,6 +194,28 @@ class DustDatabaseDownloader(tk.Tk):
             pass
         style.configure("Title.TLabel", font=("Microsoft YaHei UI", 16, "bold"))
         style.configure("Subtle.TLabel", foreground="#555555")
+
+    def _build_menu(self):
+        menu_bar = tk.Menu(self)
+
+        file_menu = tk.Menu(menu_bar, tearoff=False)
+        file_menu.add_command(label="加载汇总表", command=self.load_summary_async)
+        file_menu.add_command(label="下载选中数据", command=self.export_async)
+        file_menu.add_separator()
+        file_menu.add_command(label="退出", command=self.destroy)
+        menu_bar.add_cascade(label="文件", menu=file_menu)
+
+        feature_menu = tk.Menu(menu_bar, tearoff=False)
+        feature_menu.add_command(label="筛选下载", command=lambda: self.notebook.select(0))
+        feature_menu.add_command(label="另存字段", command=lambda: self.notebook.select(1))
+        feature_menu.add_command(label="光谱可视化", command=lambda: self.notebook.select(2))
+        menu_bar.add_cascade(label="功能", menu=feature_menu)
+
+        help_menu = tk.Menu(menu_bar, tearoff=False)
+        help_menu.add_command(label="关于", command=self.show_about)
+        menu_bar.add_cascade(label="帮助", menu=help_menu)
+
+        self.config(menu=menu_bar)
 
     def _path_row(self, parent, label, var, command, row):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=(8, 8), pady=4)
@@ -253,6 +290,60 @@ class DustDatabaseDownloader(tk.Tk):
         self.parameter_box = MultiSelectBox(parent, "选择要另存到汇总表中的字段", height=24)
         self.parameter_box.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
 
+    def _build_spectrum_page(self, parent):
+        parent.columnconfigure(0, weight=0)
+        parent.columnconfigure(1, weight=1)
+        parent.rowconfigure(0, weight=1)
+
+        control_frame = ttk.Frame(parent)
+        control_frame.grid(row=0, column=0, sticky="ns", padx=(0, 10))
+        control_frame.columnconfigure(0, weight=1)
+
+        sample_frame = ttk.LabelFrame(control_frame, text="样本")
+        sample_frame.grid(row=0, column=0, sticky="ew")
+        sample_frame.columnconfigure(0, weight=1)
+        self.spectrum_selector = ttk.Combobox(sample_frame, textvariable=self.spectrum_sample_var, values=[], width=30)
+        self.spectrum_selector.grid(row=0, column=0, columnspan=2, sticky="ew", padx=8, pady=(8, 4))
+        ttk.Button(sample_frame, text="绘制光谱", command=self.plot_selected_spectrum).grid(row=1, column=0, sticky="ew", padx=(8, 4), pady=4)
+        ttk.Button(sample_frame, text="筛选首条", command=self.use_first_filtered_spectrum).grid(row=1, column=1, sticky="ew", padx=(4, 8), pady=4)
+        ttk.Button(sample_frame, text="清空图像", command=self.clear_spectrum_plot).grid(row=2, column=0, columnspan=2, sticky="ew", padx=8, pady=(4, 8))
+
+        process_frame = ttk.LabelFrame(control_frame, text="处理")
+        process_frame.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        process_frame.columnconfigure(1, weight=1)
+        ttk.Label(process_frame, text="起始波段").grid(row=0, column=0, sticky="w", padx=8, pady=(8, 4))
+        ttk.Entry(process_frame, textvariable=self.spectrum_min_band_var, width=12).grid(row=0, column=1, sticky="ew", padx=8, pady=(8, 4))
+        ttk.Label(process_frame, text="结束波段").grid(row=1, column=0, sticky="w", padx=8, pady=4)
+        ttk.Entry(process_frame, textvariable=self.spectrum_max_band_var, width=12).grid(row=1, column=1, sticky="ew", padx=8, pady=4)
+        ttk.Label(process_frame, text="平滑窗口").grid(row=2, column=0, sticky="w", padx=8, pady=4)
+        ttk.Spinbox(process_frame, from_=1, to=101, increment=2, textvariable=self.spectrum_smooth_var, width=10).grid(row=2, column=1, sticky="ew", padx=8, pady=4)
+        ttk.Checkbutton(process_frame, text="0-1 归一化", variable=self.spectrum_normalize_var).grid(row=3, column=0, columnspan=2, sticky="w", padx=8, pady=4)
+        ttk.Button(process_frame, text="重新应用处理", command=self.redraw_current_spectrum).grid(row=4, column=0, columnspan=2, sticky="ew", padx=8, pady=(4, 8))
+
+        meta_frame = ttk.LabelFrame(control_frame, text="样本信息")
+        meta_frame.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
+        control_frame.rowconfigure(2, weight=1)
+        meta_frame.rowconfigure(0, weight=1)
+        meta_frame.columnconfigure(0, weight=1)
+        self.spectrum_meta_tree = ttk.Treeview(meta_frame, columns=("field", "value"), show="headings", height=12)
+        self.spectrum_meta_tree.heading("field", text="字段")
+        self.spectrum_meta_tree.heading("value", text="值")
+        self.spectrum_meta_tree.column("field", width=96, anchor="w")
+        self.spectrum_meta_tree.column("value", width=180, anchor="w")
+        meta_scroll = ttk.Scrollbar(meta_frame, orient="vertical", command=self.spectrum_meta_tree.yview)
+        self.spectrum_meta_tree.configure(yscrollcommand=meta_scroll.set)
+        self.spectrum_meta_tree.grid(row=0, column=0, sticky="nsew", padx=(8, 0), pady=8)
+        meta_scroll.grid(row=0, column=1, sticky="ns", pady=8, padx=(0, 8))
+
+        plot_frame = ttk.LabelFrame(parent, text="光谱曲线")
+        plot_frame.grid(row=0, column=1, sticky="nsew")
+        plot_frame.columnconfigure(0, weight=1)
+        plot_frame.rowconfigure(0, weight=1)
+        self.spectrum_canvas = tk.Canvas(plot_frame, bg="white", highlightthickness=1, highlightbackground="#cccccc")
+        self.spectrum_canvas.grid(row=0, column=0, sticky="nsew", padx=8, pady=(8, 4))
+        self.spectrum_canvas.bind("<Configure>", lambda _event: self.redraw_current_spectrum())
+        ttk.Label(plot_frame, textvariable=self.spectrum_stats_var, style="Subtle.TLabel").grid(row=1, column=0, sticky="w", padx=8, pady=(0, 8))
+
     def _build_log_page(self, parent):
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(0, weight=1)
@@ -279,6 +370,14 @@ class DustDatabaseDownloader(tk.Tk):
         path = filedialog.askdirectory(title="选择导出位置")
         if path:
             self.output_dir_var.set(path)
+
+    def show_about(self):
+        messagebox.showinfo(
+            "关于",
+            f"{APP_TITLE}\n\n"
+            "滞尘数据库检索、下载与光谱可视化工具。\n\n"
+            f"第一维护者：{MAINTAINER}\n邮箱：{MAINTAINER_EMAIL}",
+        )
 
     def log(self, message):
         timestamp = dt.datetime.now().strftime("%H:%M:%S")
@@ -378,6 +477,7 @@ class DustDatabaseDownloader(tk.Tk):
             self.on_field_selected()
 
         self.parameter_box.set_values(self.headers, select_all=True)
+        self.update_spectrum_selector()
         self.refresh_filter_tree()
 
     def on_field_selected(self, event=None):
@@ -460,6 +560,240 @@ class DustDatabaseDownloader(tk.Tk):
             if field in self.headers and field not in fields:
                 fields.append(field)
         return fields
+
+    def update_spectrum_selector(self):
+        sample_ids = [row.get("标识码", "") for row in self.rows if row.get("标识码", "")]
+        if self.spectrum_selector is not None:
+            self.spectrum_selector.configure(values=sample_ids)
+        if sample_ids and self.spectrum_sample_var.get() not in sample_ids:
+            self.spectrum_sample_var.set(sample_ids[0])
+
+    def sample_row_by_id(self, sample_id):
+        for row in self.rows:
+            if row.get("标识码", "") == sample_id:
+                return row
+        return None
+
+    def populate_spectrum_metadata(self, row):
+        if self.spectrum_meta_tree is None:
+            return
+        for item in self.spectrum_meta_tree.get_children():
+            self.spectrum_meta_tree.delete(item)
+        if not row:
+            return
+        priority_fields = [
+            "标识码",
+            "树种",
+            "植被类型",
+            "采样日期",
+            "季度",
+            "采样地点",
+            "光谱尺度",
+            "传感器",
+            "滞尘能力（g/m²）",
+        ]
+        fields = [field for field in priority_fields if field in row]
+        fields.extend(field for field in self.headers if field not in fields and field in row)
+        for field in fields:
+            value = row.get(field, "")
+            if value != "":
+                self.spectrum_meta_tree.insert("", tk.END, values=(field, value))
+
+    def use_first_filtered_spectrum(self):
+        try:
+            for row in self.filter_rows():
+                sample_id = row.get("标识码", "")
+                if self.spectrum_exists(sample_id):
+                    self.spectrum_sample_var.set(sample_id)
+                    self.plot_selected_spectrum()
+                    return
+            messagebox.showwarning("没有可绘制光谱", "当前筛选结果中没有找到匹配的光谱 txt。")
+        except Exception as exc:
+            messagebox.showerror("选择失败", str(exc))
+
+    def plot_selected_spectrum(self):
+        sample_id = self.spectrum_sample_var.get().strip()
+        if not sample_id:
+            messagebox.showwarning("未选择样本", "请先输入或选择一个标识码。")
+            return
+        try:
+            points = self.load_spectrum(sample_id)
+            self.current_spectrum = (sample_id, points)
+            self.populate_spectrum_metadata(self.sample_row_by_id(sample_id))
+            self.redraw_current_spectrum()
+            self.notebook.select(2)
+            self.log(f"已绘制光谱：{sample_id}，波段点 {len(points)} 个。")
+        except Exception as exc:
+            self.current_spectrum = None
+            self.clear_spectrum_plot()
+            messagebox.showerror("绘制失败", str(exc))
+
+    def load_spectrum(self, sample_id):
+        path = self.spectrum_path(sample_id)
+        if not self.spectra_dir_var.get().strip():
+            raise RuntimeError("请先选择光谱文件夹。")
+        if not path.exists():
+            raise FileNotFoundError(f"光谱 txt 不存在：{path}")
+        points = []
+        text = path.read_text(encoding="utf-8-sig")
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if "," in line:
+                parts = [part.strip() for part in line.split(",")]
+            elif "\t" in line:
+                parts = [part.strip() for part in line.split("\t")]
+            else:
+                parts = line.split()
+            if len(parts) < 2:
+                continue
+            try:
+                band = float(parts[0])
+                reflectance = float(parts[1])
+            except ValueError:
+                continue
+            if math.isfinite(band) and math.isfinite(reflectance):
+                points.append((band, reflectance))
+        if not points:
+            raise RuntimeError(f"未从光谱文件读取到有效数值：{path}")
+        points.sort(key=lambda item: item[0])
+        return points
+
+    def processed_spectrum(self, points):
+        min_band = self._optional_float(self.spectrum_min_band_var.get())
+        max_band = self._optional_float(self.spectrum_max_band_var.get())
+        filtered = []
+        for band, reflectance in points:
+            if min_band is not None and band < min_band:
+                continue
+            if max_band is not None and band > max_band:
+                continue
+            filtered.append((band, reflectance))
+        if not filtered:
+            raise RuntimeError("当前波段范围内没有数据点。")
+
+        window = self._smooth_window()
+        if window > 1 and len(filtered) >= window:
+            half = window // 2
+            smoothed = []
+            values = [value for _band, value in filtered]
+            for index, (band, _value) in enumerate(filtered):
+                start = max(0, index - half)
+                end = min(len(values), index + half + 1)
+                smoothed.append((band, sum(values[start:end]) / (end - start)))
+            filtered = smoothed
+
+        if self.spectrum_normalize_var.get():
+            values = [value for _band, value in filtered]
+            low = min(values)
+            high = max(values)
+            if high > low:
+                filtered = [(band, (value - low) / (high - low)) for band, value in filtered]
+            else:
+                filtered = [(band, 0.0) for band, _value in filtered]
+        return filtered
+
+    def _optional_float(self, value):
+        value = value.strip()
+        if not value:
+            return None
+        return float(value)
+
+    def _smooth_window(self):
+        try:
+            window = int(self.spectrum_smooth_var.get())
+        except (tk.TclError, ValueError):
+            return 1
+        if window < 1:
+            return 1
+        if window % 2 == 0:
+            window += 1
+            self.spectrum_smooth_var.set(window)
+        return window
+
+    def redraw_current_spectrum(self):
+        if self.spectrum_canvas is None:
+            return
+        if not self.current_spectrum:
+            self.draw_blank_spectrum()
+            return
+        sample_id, points = self.current_spectrum
+        try:
+            processed = self.processed_spectrum(points)
+        except Exception as exc:
+            self.draw_blank_spectrum(str(exc))
+            return
+        self.draw_spectrum(sample_id, processed)
+
+    def clear_spectrum_plot(self):
+        self.current_spectrum = None
+        self.populate_spectrum_metadata(None)
+        self.draw_blank_spectrum()
+
+    def draw_blank_spectrum(self, message="选择样本后绘制光谱"):
+        canvas = self.spectrum_canvas
+        if canvas is None:
+            return
+        canvas.delete("all")
+        width = max(canvas.winfo_width(), 400)
+        height = max(canvas.winfo_height(), 280)
+        canvas.create_text(width / 2, height / 2, text=message, fill="#666666", font=("Microsoft YaHei UI", 12))
+        self.spectrum_stats_var.set("未绘制光谱")
+
+    def draw_spectrum(self, sample_id, points):
+        canvas = self.spectrum_canvas
+        canvas.delete("all")
+        width = max(canvas.winfo_width(), 520)
+        height = max(canvas.winfo_height(), 360)
+        left, right, top, bottom = 64, 20, 28, 48
+        plot_width = max(width - left - right, 1)
+        plot_height = max(height - top - bottom, 1)
+
+        bands = [band for band, _value in points]
+        values = [value for _band, value in points]
+        min_x, max_x = min(bands), max(bands)
+        min_y, max_y = min(values), max(values)
+        if max_x == min_x:
+            max_x = min_x + 1
+        if max_y == min_y:
+            max_y = min_y + 1
+        y_pad = (max_y - min_y) * 0.05
+        min_y -= y_pad
+        max_y += y_pad
+
+        def sx(x_value):
+            return left + (x_value - min_x) / (max_x - min_x) * plot_width
+
+        def sy(y_value):
+            return top + (max_y - y_value) / (max_y - min_y) * plot_height
+
+        canvas.create_rectangle(left, top, left + plot_width, top + plot_height, outline="#999999")
+        for index in range(6):
+            x = left + plot_width * index / 5
+            y = top + plot_height * index / 5
+            canvas.create_line(x, top, x, top + plot_height, fill="#eeeeee")
+            canvas.create_line(left, y, left + plot_width, y, fill="#eeeeee")
+            x_value = min_x + (max_x - min_x) * index / 5
+            y_value = max_y - (max_y - min_y) * index / 5
+            canvas.create_text(x, top + plot_height + 16, text=f"{x_value:.0f}", fill="#555555", font=("Microsoft YaHei UI", 8))
+            canvas.create_text(left - 8, y, text=f"{y_value:.3f}", anchor="e", fill="#555555", font=("Microsoft YaHei UI", 8))
+
+        line_points = []
+        for band, value in points:
+            line_points.extend([sx(band), sy(value)])
+        if len(line_points) >= 4:
+            canvas.create_line(*line_points, fill="#1f6feb", width=2, smooth=False)
+
+        canvas.create_text(left + plot_width / 2, height - 14, text="Bands (nm)", fill="#333333", font=("Microsoft YaHei UI", 9))
+        canvas.create_text(18, top + plot_height / 2, text="Reflectance", fill="#333333", angle=90, font=("Microsoft YaHei UI", 9))
+        canvas.create_text(left, 14, text=sample_id, anchor="w", fill="#222222", font=("Microsoft YaHei UI", 10, "bold"))
+
+        mean_y = sum(values) / len(values)
+        self.spectrum_stats_var.set(
+            f"点数 {len(points)}；波段 {min_x:.0f}-{max_x:.0f} nm；"
+            f"反射率 min {min(values):.4f} / mean {mean_y:.4f} / max {max(values):.4f}"
+        )
 
     def spectrum_path(self, sample_id):
         spectra_dir = Path(self.spectra_dir_var.get().strip())
