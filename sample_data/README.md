@@ -1,11 +1,19 @@
 # Sample Data
 
-This folder is reserved for small, public, desensitized example data only.
+This folder contains a small example dataset for testing DustDB v1.
 
-Do not place the full research database or original spectral files here.
+## Files
 
-Recommended contents:
+- `滞尘数据汇总_示例.xlsx`: a reduced workbook with 15 records from three worksheets.
+- `光谱/`: matching spectral `.txt` files for the example records.
 
-- A tiny example summary table with a few fake or desensitized rows.
-- A few matching example spectral `.txt` files.
-- A short note explaining that the complete dataset is maintained by the research group locally.
+## How To Use
+
+Open `dist/DustDB_v1.exe`, then select:
+
+- Summary table: `sample_data/滞尘数据汇总_示例.xlsx`
+- Spectra folder: `sample_data/光谱/`
+
+Click `加载汇总表` to test filtering, exporting, and spectrum visualization.
+
+The complete research database is not included in this repository.

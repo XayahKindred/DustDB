@@ -10,7 +10,9 @@ env/
 
 # Build/package outputs
 build/
-dist/
+dist/*
+!dist/
+!dist/DustDB_v1.exe
 *.spec
 
 # Local exports and generated outputs
