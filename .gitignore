@@ -1,0 +1,65 @@
+# Python/cache artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local virtual environments
+.venv/
+venv/
+env/
+
+# Build/package outputs
+build/
+dist/
+*.spec
+
+# Local exports and generated outputs
+exports/
+outputs/
+export/
+DustDB_v1_export_*/
+
+# Full research data should stay outside the public repository.
+data/
+raw_data/
+database/
+full_data/
+光谱/
+完整数据/
+原始数据/
+
+# Common large/local data formats
+*.db
+*.sqlite
+*.sqlite3
+*.gpkg
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+*.tif
+*.tiff
+*.nc
+*.zip
+*.7z
+*.rar
+
+# Spreadsheet/text data are ignored by default, except approved examples.
+*.xlsx
+*.xls
+*.csv
+*.txt
+!sample_data/
+!sample_data/**
+!sample_data/**/*.xlsx
+!sample_data/**/*.xls
+!sample_data/**/*.csv
+!sample_data/**/*.txt
+!sample_data/**/*.md
+
+# Keep repository docs and scripts.
+!*.md
+!*.py
+!*.ps1
+!requirements*.txt
